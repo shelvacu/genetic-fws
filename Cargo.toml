@@ -9,3 +9,5 @@ edition = "2018"
 [dependencies]
 indicatif = "0.15.0"
 fnv = "1.0.7"
+rand = "0.8.3"
+decorum = "0.3.1"

@@ -1,20 +1,20 @@
-#![feature(array_methods, exclusive_range_pattern, type_ascription)]
+#![feature(array_methods, exclusive_range_pattern, type_ascription, total_cmp)]
 #![allow(unused_imports,unused_variables,dead_code)]
 use std::collections::{HashMap,BTreeMap};
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
-use std::num::NonZeroU8;
 use std::convert::TryFrom;
 use std::hint::unreachable_unchecked;
-use std::ops::BitAnd;
 use std::convert::TryInto;
-use std::fmt;
 use std::thread::sleep;
 use std::time::Duration;
 use std::default::Default;
+use std::cmp::{PartialOrd,Ord,Ordering};
+use std::fmt;
 use fnv::FnvHashMap;
 use indicatif::ProgressBar;
+use rand::Rng;
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where P: AsRef<Path>, {
@@ -22,145 +22,14 @@ where P: AsRef<Path>, {
     Ok(io::BufReader::new(file).lines())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-struct FChar(NonZeroU8);
+mod fchar;
+use fchar::{FChar, CharSet};
 
-impl FChar {
-    pub unsafe fn new_unchecked(u: u8) -> Self {
-        return FChar(NonZeroU8::new_unchecked(u))
-    }
+mod svm;
+use svm::*;
 
-    pub fn new(u: u8) -> Self {
-        if u <= 26 {
-            return FChar(NonZeroU8::new(u).unwrap());
-        } else {
-            panic!("u out of range");
-        }
-    }
-}
-
-impl fmt::Debug for FChar {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "F{}", (*self).into():char)
-    }
-}
-
-impl TryFrom<char> for FChar {
-    type Error = &'static str;
-
-    fn try_from(value: char) -> Result<Self, Self::Error> {
-        match value {
-            'a' | 'A' => Ok(FChar(NonZeroU8::new(1).unwrap())),
-            'b' | 'B' => Ok(FChar(NonZeroU8::new(2).unwrap())),
-            'c' | 'C' => Ok(FChar(NonZeroU8::new(3).unwrap())),
-            'd' | 'D' => Ok(FChar(NonZeroU8::new(4).unwrap())),
-            'e' | 'E' => Ok(FChar(NonZeroU8::new(5).unwrap())),
-            'f' | 'F' => Ok(FChar(NonZeroU8::new(6).unwrap())),
-            'g' | 'G' => Ok(FChar(NonZeroU8::new(7).unwrap())),
-            'h' | 'H' => Ok(FChar(NonZeroU8::new(8).unwrap())),
-            'i' | 'I' => Ok(FChar(NonZeroU8::new(9).unwrap())),
-            'j' | 'J' => Ok(FChar(NonZeroU8::new(10).unwrap())),
-            'k' | 'K' => Ok(FChar(NonZeroU8::new(11).unwrap())),
-            'l' | 'L' => Ok(FChar(NonZeroU8::new(12).unwrap())),
-            'm' | 'M' => Ok(FChar(NonZeroU8::new(13).unwrap())),
-            'n' | 'N' => Ok(FChar(NonZeroU8::new(14).unwrap())),
-            'o' | 'O' => Ok(FChar(NonZeroU8::new(15).unwrap())),
-            'p' | 'P' => Ok(FChar(NonZeroU8::new(16).unwrap())),
-            'q' | 'Q' => Ok(FChar(NonZeroU8::new(17).unwrap())),
-            'r' | 'R' => Ok(FChar(NonZeroU8::new(18).unwrap())),
-            's' | 'S' => Ok(FChar(NonZeroU8::new(19).unwrap())),
-            't' | 'T' => Ok(FChar(NonZeroU8::new(20).unwrap())),
-            'u' | 'U' => Ok(FChar(NonZeroU8::new(21).unwrap())),
-            'v' | 'V' => Ok(FChar(NonZeroU8::new(22).unwrap())),
-            'w' | 'W' => Ok(FChar(NonZeroU8::new(23).unwrap())),
-            'x' | 'X' => Ok(FChar(NonZeroU8::new(24).unwrap())),
-            'y' | 'Y' => Ok(FChar(NonZeroU8::new(25).unwrap())),
-            'z' | 'Z' => Ok(FChar(NonZeroU8::new(26).unwrap())),
-            _ => Err("Invalid character"),
-        }
-    }
-}
-
-impl From<FChar> for char {
-    fn from(f:FChar) -> char {
-        match f.0.into():u8 {
-            1..=26 => return (('`' as u8) + (f.0.into():u8)) as char,
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct CharSet(u32);
-
-impl CharSet {
-    fn set(self, c:FChar) -> Self {
-        match c.0.into():u8 {
-            1..=26 => CharSet(self.0 | (1 << c.0.into():u8)),
-            _ => unreachable!(),
-        }
-    }
-
-    fn clear(self, c:FChar) -> Self {
-        match c.0.into():u8 {
-            1..=26 => CharSet(self.0 & !(1 << c.0.into():u8)),
-            _ => unreachable!(),
-        }
-    }
-
-    fn check(self, c:FChar) -> bool {
-        match c.0.into():u8 {
-            1..=26 => (self.0 & (1 << c.0.into():u8)) > 0,
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl fmt::Debug for CharSet {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "CharSet({})", self.into_iter().map(|f| f.into():char).collect::<String>())
-    }
-}
-
-struct CharSetIter(CharSet,u8);
-
-impl Iterator for CharSetIter {
-    type Item = FChar;
-    fn next(&mut self) -> Option<FChar> {
-        while self.1 < 27 {
-            let f = FChar::new(self.1);
-            self.1 += 1;
-            if self.0.check(f) {
-                return Some(f);
-            }
-        }
-        return None;
-    }
-}
-
-impl IntoIterator for CharSet {
-    type Item = FChar;
-    type IntoIter = CharSetIter;
-
-    fn into_iter(self) -> Self::IntoIter {
-        CharSetIter(self, 1)
-    }
-}
-
-impl Default for CharSet {
-    fn default() -> CharSet {
-        CharSet(0)
-    }
-}
-
-impl BitAnd for CharSet {
-    type Output = Self;
-
-    // rhs is the "right-hand side" of the expression `a & b`
-    fn bitand(self, rhs: Self) -> Self::Output {
-        Self(self.0 & rhs.0)
-    }
-}
+mod genetics;
+use genetics::*;
 
 const SIZE:usize = 10;
 
@@ -169,9 +38,105 @@ type OWord = [Option<FChar>; SIZE];
 type Square = [OWord; SIZE];
 type WMap = FnvHashMap<OWord, CharSet>;
 
+
+const INSTRUCTION_SIZE_MAX:usize = 1024;
+const INSTRUCTION_SIZE_INIT:usize = 32;
+const GENEPOOL_SIZE:usize = 1000;
+
+const WEIGHT_FALSE_POSITIVE:f64 = 1000.0;
+const WEIGHT_FALSE_NEGATIVE:f64 = 4000.0;
+const WEIGHT_INSTRUCTION:f64 = 0.1;
+
+const NUM_TRIALS:usize = 1000;
+
+
+
+// Fitness function, lower is better
+fn fitness<R: Rng + ?Sized, I: Iterator<Item=SvmInstruction> + std::iter::ExactSizeIterator + fmt::Debug + Clone>(
+    instructions: I,
+    map: &WMap,
+    rng: &mut R,
+    trials: usize
+) -> f64 {
+    let mut sum = 0.0;
+    for _ in 0..trials {
+        let num_to_fill = rng.gen_range(2..SIZE); //purposefully NOT inclusive of completely filled
+        let mut word:OWord = [None; SIZE];
+        let mut set = CharSet::full();
+        let mut num_filled = 0;
+        while num_filled < num_to_fill {
+            //dbg!(num_filled, num_to_fill, word, set);
+            let options:Vec<_> = set.into_iter().collect();
+            if options.is_empty() { panic!(); }
+            word[num_filled] = Some(options[rng.gen_range(0..options.len())]);
+            num_filled += 1;
+            set = *map.get(&word).unwrap();
+        }
+        // for i in 0..num_to_fill {
+        //     word[i] = Some(FChar::random(rng));
+        // }
+        sum += fitness_single(instructions.clone(), map, word, false);
+    }
+    return sum/(trials as f64) + (instructions.len() as f64) * WEIGHT_INSTRUCTION;
+}
+
+// f full
+// g guess
+// r real
+
+// f|g|r|&|^|description
+// 0|0|0|0|0|doesnt matter
+// 0|0|1|0|1|doesnt matter
+// 0|1|0|0|1|doesnt matter
+// 0|1|1|1|0|doesnt matter
+// 1|0|0|0|0|accurate
+// 1|0|1|0|1|false negative
+// 1|1|0|0|1|false positive
+// 1|1|1|1|0|accurate
+
+// false positives = (g^r)&g
+// false negatives = (g^r)&r
+
+
+fn fitness_single<I: Iterator<Item=SvmInstruction> + fmt::Debug>(
+    instructions: I,
+    map: &WMap,
+    word: OWord,
+    debug: bool,
+) -> f64 {
+    let mut state = SvmState::new(instructions);
+    for i in 0..SIZE {
+        state.memory_mut()[i+1] = word[i].map(|f| CharSet::default().set(f).into():u32).unwrap_or_default();
+    }
+    //Default to outputting all 0's (the worst default) to discourage empty programs
+    state.memory_mut()[0] = 0;
+    loop {
+        let res = state.step();
+        if res == StepResult::Finish { break; }
+    }
+    let full:u32 = CharSet::full().into();
+    let guess:u32 = state.memory_mut()[0];
+    let real:u32 = map.get(&word).map(|a| *a).unwrap_or_default().into();
+    let xor = guess^real;
+    let false_positives:f64 = (full&xor&guess).count_ones().into();
+    let false_negatives:f64 = (full&xor&real ).count_ones().into();
+    if debug {
+        dbg!(
+            guess,
+            real,
+            xor,
+            (full&guess).count_ones(),
+            false_positives,
+            ((!full)| guess).count_zeros(),
+            false_negatives,
+        );
+    }
+    return ((false_positives * WEIGHT_FALSE_POSITIVE) + (false_negatives * WEIGHT_FALSE_NEGATIVE)).powf(2.0);
+}
+
 fn main() {
     dbg!(SIZE);
-    let wordsfn = std::env::args().nth(1).unwrap();
+    let wordsfn = std::env::args().nth(1).unwrap_or(String::from("/home/shelvacu/words/uncompressible.txt"));
 
     // let data = std::fs::read(&wordsfn).unwrap();
 
@@ -210,6 +175,132 @@ fn main() {
     }
 
     dbg!(map.len());
+
+    let mut rng = rand::thread_rng();
+    struct Genome {
+        instructions: Vec<Gene>,
+        mutation_rate: f64,
+        fitness: f64,
+    }
+    let mut pool:Vec<Genome> = Vec::with_capacity(GENEPOOL_SIZE);
+
+    for _ in 0..GENEPOOL_SIZE {
+        let mut instructions:Vec<Gene> = Vec::with_capacity(INSTRUCTION_SIZE_INIT);
+
+        for _ in 0..INSTRUCTION_SIZE_INIT {
+            instructions.push(Gene(rng.gen(), SvmInstruction::random(&mut rng)));
+        }
+        instructions.sort_unstable_by(|a,b| a.0.total_cmp(&b.0));
+        pool.push(Genome{
+            instructions,
+            mutation_rate: 0.5,
+            fitness: 0.0,
+        });
+    }
+
+    let mut round = 1;
+    loop {
+        for g in &mut pool {
+            g.fitness = fitness(g.instructions.iter().map(|g| g.1), &map, &mut rng, NUM_TRIALS);
+        }
+        pool.sort_by(|a,b| a.fitness.partial_cmp(&b.fitness).unwrap());
+        let first = pool.first().unwrap();
+        for ins in &first.instructions {
+            println!("{:.5}: {}", ins.0, ins.1)
+        }
+        fitness_single(
+            first.instructions.iter().map(|a| a.1),
+            &map, 
+            [
+                Some(FChar::try_from('a').unwrap()),
+                Some(FChar::try_from('b').unwrap()),
+                Some(FChar::try_from('a').unwrap()),
+                Some(FChar::try_from('c').unwrap()),
+                Some(FChar::try_from('a').unwrap()),
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            true,
+        );
+        fitness_single(
+            first.instructions.iter().map(|a| a.1),
+            &map, 
+            [
+                Some(FChar::try_from('a').unwrap()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            ],
+            true,
+        );
+        println!(
+            "Round {}, best/med/worst {:.5}/{:.5}/{:.5}",
+            round,
+            pool.first().unwrap().fitness,
+            pool[pool.len()/2].fitness,
+            pool.last().unwrap().fitness,
+        );
+        for _ in 0..((pool.len()/4)*3) {
+            pool.pop();
+        }
+        let parents_end = pool.len();
+        for _ in parents_end..GENEPOOL_SIZE {
+            let parents = (&pool[rng.gen_range(0..parents_end)],&pool[rng.gen_range(0..parents_end)]);
+            let mut genes = Vec::new();
+            for mut b in diff(parents.0.instructions.iter().map(|a| *a), parents.1.instructions.iter().map(|a| *a)) {
+                match b.ty {
+                    DiffTy::Both => genes.append(&mut b.block),
+                    _ => if rng.gen():bool { genes.append(&mut b.block) },
+                }
+            }
+            let mut mutation_rates = [parents.0.mutation_rate, parents.1.mutation_rate];
+            mutation_rates.sort_unstable_by(|a,b| a.partial_cmp(&b).unwrap());
+            let child_mutation_rate;
+            if mutation_rates[0].eq(&mutation_rates[1]) {
+                child_mutation_rate = mutation_rates[0];
+            } else {
+                child_mutation_rate = rng.gen_range(mutation_rates[0]..mutation_rates[1]);
+            }
+            let mut child = Genome{
+                instructions: genes,
+                mutation_rate: child_mutation_rate,
+                fitness: -1.0,
+            };
+            child.mutation_rate += (rng.gen::<f64>() - 0.5)*child.mutation_rate*0.1;
+            if child.mutation_rate > 0.9 {
+                child.mutation_rate = 0.9;
+            }
+            if child.mutation_rate < 0.01 {
+                child.mutation_rate = 0.01;
+            }
+            while rng.gen::<f64>() < child.mutation_rate {
+                if rng.gen::<bool>() {
+                    //add a random gene
+                    child.instructions.push(Gene(rng.gen(), SvmInstruction::random(&mut rng)));
+                    child.instructions.sort();
+                } else {
+                    //remove a random gene
+                    if !child.instructions.is_empty() {
+                        child.instructions.remove(rng.gen_range(0..child.instructions.len()));
+                    }
+                }
+            }
+            pool.push(child);
+        }
+
+        round += 1;
+    }
+
+    std::process::exit(0);
     // let pb = ProgressBar::new(words.len().try_into().unwrap():u64);
     // pb.inc(0);
     let mut square:[[Option<FChar>; SIZE]; SIZE] = [[None; SIZE]; SIZE];
