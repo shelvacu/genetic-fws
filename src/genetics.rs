@@ -1,13 +1,17 @@
 use std::cmp::Ordering;
+use serde_derive::{Serialize,Deserialize};
 
 use super::svm::*;
 
-#[derive(Debug,Clone,Copy)]
-pub struct Gene(pub f64, pub SvmInstruction);
+#[derive(Debug,Clone,Copy,Serialize,Deserialize)]
+pub struct Gene{
+    pub order:f64,
+    pub ins:SvmInstruction
+}
 
 impl PartialEq for Gene {
     fn eq(&self, other: &Self) -> bool {
-        self.0.partial_cmp(&other.0).unwrap() == Ordering::Equal && self.1 == other.1
+        self.order.partial_cmp(&other.order).unwrap() == Ordering::Equal && self.ins == other.ins
     }
 }
 
@@ -21,8 +25,8 @@ impl PartialOrd for Gene {
 
 impl Ord for Gene {
     fn cmp(&self, other: &Self) -> Ordering {
-        match self.0.partial_cmp(&other.0).unwrap() {
-            Ordering::Equal => self.1.cmp(&other.1),
+        match self.order.partial_cmp(&other.order).unwrap() {
+            Ordering::Equal => self.ins.cmp(&other.ins),
             a => a,
         }
     }
@@ -75,7 +79,9 @@ pub fn diff(mut a_it:impl Iterator<Item=Gene>, mut b_it:impl Iterator<Item=Gene>
         }
     }
     std::mem::drop(add_block);
-    res.push(cur_block);
+    if !cur_block.block.is_empty() {
+        res.push(cur_block);
+    }
     res
 }
 
@@ -85,10 +91,10 @@ mod diff_test {
     fn convenient_diff(a: &[f64], b: &[f64], expected: &[(DiffTy, Vec<f64>)]) {
         let ins = SvmInstruction{ty: SvmInstructionTy::Xor, dest: 0, src: 0};
         let res = diff(
-            a.iter().map(|n| Gene(*n, ins)),
-            b.iter().map(|n| Gene(*n, ins))
+            a.iter().map(|n| Gene{order: *n, ins}),
+            b.iter().map(|n| Gene{order: *n, ins})
         );
-        let nums:Vec<_> = res.iter().map(|g| (g.ty, g.block.iter().map(|n| n.0).collect():Vec<_>)).collect();
+        let nums:Vec<_> = res.iter().map(|g| (g.ty, g.block.iter().map(|n| n.order).collect():Vec<_>)).collect();
         assert_eq!(nums.as_slice(), expected);
     }
     #[test]

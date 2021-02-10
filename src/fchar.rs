@@ -9,12 +9,12 @@ pub struct FChar(NonZeroU8);
 
 impl FChar {
     pub unsafe fn new_unchecked(u: u8) -> Self {
-        return FChar(NonZeroU8::new_unchecked(u))
+        FChar(NonZeroU8::new_unchecked(u))
     }
 
     pub fn new(u: u8) -> Self {
         if u <= 26 {
-            return FChar(NonZeroU8::new(u).unwrap());
+            FChar(NonZeroU8::new(u).unwrap())
         } else {
             panic!("u out of range");
         }
@@ -70,7 +70,7 @@ impl TryFrom<char> for FChar {
 impl From<FChar> for char {
     fn from(f:FChar) -> char {
         match f.0.into():u8 {
-            1..=26 => return (('`' as u8) + (f.0.into():u8)) as char,
+            1..=26 => (b'`' + (f.0.into():u8)) as char,
             _ => unreachable!(),
         }
     }
@@ -136,7 +136,7 @@ impl Iterator for CharSetIter {
                 return Some(f);
             }
         }
-        return None;
+        None
     }
 }
 

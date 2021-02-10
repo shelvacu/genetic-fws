@@ -1,20 +1,17 @@
 #![feature(array_methods, exclusive_range_pattern, type_ascription, total_cmp)]
-#![allow(unused_imports,unused_variables,dead_code)]
-use std::collections::{HashMap,BTreeMap};
+#![allow(clippy::needless_range_loop)]
+//#![allow(unused_imports,unused_variables,dead_code)]
 use std::fs::File;
 use std::io::{self, BufRead};
 use std::path::Path;
 use std::convert::TryFrom;
-use std::hint::unreachable_unchecked;
-use std::convert::TryInto;
-use std::thread::sleep;
-use std::time::Duration;
 use std::default::Default;
-use std::cmp::{PartialOrd,Ord,Ordering};
+use std::cmp::PartialOrd;
 use std::fmt;
 use fnv::FnvHashMap;
-use indicatif::ProgressBar;
 use rand::Rng;
+use serde_derive::{Serialize,Deserialize};
+use libflate::gzip::Encoder;
 
 fn read_lines<P>(filename: P) -> io::Result<io::Lines<io::BufReader<File>>>
 where P: AsRef<Path>, {
@@ -77,7 +74,7 @@ fn fitness<R: Rng + ?Sized, I: Iterator<Item=SvmInstruction> + std::iter::ExactS
         // }
         sum += fitness_single(instructions.clone(), map, word, false);
     }
-    return sum/(trials as f64) + (instructions.len() as f64) * WEIGHT_INSTRUCTION;
+    sum/(trials as f64) + (instructions.len() as f64) * WEIGHT_INSTRUCTION
 }
 
 // f full
@@ -105,6 +102,7 @@ fn fitness_single<I: Iterator<Item=SvmInstruction> + fmt::Debug>(
     debug: bool,
 ) -> f64 {
     let mut state = SvmState::new(instructions);
+    
     for i in 0..SIZE {
         state.memory_mut()[i+1] = word[i].map(|f| CharSet::default().set(f).into():u32).unwrap_or_default();
     }
@@ -116,7 +114,7 @@ fn fitness_single<I: Iterator<Item=SvmInstruction> + fmt::Debug>(
     }
     let full:u32 = CharSet::full().into();
     let guess:u32 = state.memory_mut()[0];
-    let real:u32 = map.get(&word).map(|a| *a).unwrap_or_default().into();
+    let real:u32 = map.get(&word).copied().unwrap_or_default().into();
     let xor = guess^real;
     let false_positives:f64 = (full&xor&guess).count_ones().into();
     let false_negatives:f64 = (full&xor&real ).count_ones().into();
@@ -131,26 +129,22 @@ fn fitness_single<I: Iterator<Item=SvmInstruction> + fmt::Debug>(
             false_negatives,
         );
     }
-    return ((false_positives * WEIGHT_FALSE_POSITIVE) + (false_negatives * WEIGHT_FALSE_NEGATIVE)).powf(2.0);
+    ((false_positives * WEIGHT_FALSE_POSITIVE) + (false_negatives * WEIGHT_FALSE_NEGATIVE)).powf(2.0)
 }
 
 fn main() {
     dbg!(SIZE);
-    let wordsfn = std::env::args().nth(1).unwrap_or(String::from("/home/shelvacu/words/uncompressible.txt"));
+    let wordsfn = std::env::args().nth(1).unwrap_or_else(|| String::from("/home/shelvacu/words/uncompressible.txt"));
 
     // let data = std::fs::read(&wordsfn).unwrap();
 
     // dbg!(&data[0..10]);
 
-    let mut words:Vec<[FChar; SIZE]> = Vec::new();
-    let mut line_no = 0;
+    let mut words:Vec<Word> = Vec::new();
     for maybe_line in read_lines(&wordsfn).unwrap() {
-        line_no += 1;
-        // println!("{}", line_no);
-        // dbg!(&maybe_line);
         let line = maybe_line.unwrap();
         if line.len() == SIZE {
-            if let Ok(word_vec) = line.chars().map(|c| FChar::try_from(c)).collect():Result<Vec<FChar>,_> {
+            if let Ok(word_vec) = line.chars().map(FChar::try_from).collect():Result<Vec<FChar>,_> {
                 let mut word = [FChar::try_from('a').unwrap(); SIZE];
                 word.as_mut_slice().copy_from_slice(word_vec.as_slice());
                 words.push(word);
@@ -176,40 +170,65 @@ fn main() {
 
     dbg!(map.len());
 
+    if false {
+        find_squares(&words, &map);
+        std::process::exit(0);
+    }
+
     let mut rng = rand::thread_rng();
+    #[derive(Debug,Serialize,Deserialize)]
     struct Genome {
         instructions: Vec<Gene>,
         mutation_rate: f64,
         fitness: f64,
     }
-    let mut pool:Vec<Genome> = Vec::with_capacity(GENEPOOL_SIZE);
+
+    #[derive(Debug,Serialize,Deserialize)]
+    struct State {
+        round: usize,
+        pool: Vec<Genome>,
+    }
+    //let mut pool:Vec<Genome> = Vec::with_capacity(GENEPOOL_SIZE);
+    let mut state = State{
+        round: 1,
+        pool: Vec::with_capacity(GENEPOOL_SIZE),
+    };
 
     for _ in 0..GENEPOOL_SIZE {
         let mut instructions:Vec<Gene> = Vec::with_capacity(INSTRUCTION_SIZE_INIT);
 
         for _ in 0..INSTRUCTION_SIZE_INIT {
-            instructions.push(Gene(rng.gen(), SvmInstruction::random(&mut rng)));
+            instructions.push(Gene{order: rng.gen(), ins: SvmInstruction::random(&mut rng)});
         }
-        instructions.sort_unstable_by(|a,b| a.0.total_cmp(&b.0));
-        pool.push(Genome{
+        instructions.sort_unstable_by(|a,b| a.order.total_cmp(&b.order));
+        state.pool.push(Genome{
             instructions,
             mutation_rate: 0.5,
             fitness: 0.0,
         });
     }
 
-    let mut round = 1;
+    //let mut round = 1;
     loop {
-        for g in &mut pool {
-            g.fitness = fitness(g.instructions.iter().map(|g| g.1), &map, &mut rng, NUM_TRIALS);
+        for g in &mut state.pool {
+            g.fitness = fitness(g.instructions.iter().map(|g| g.ins), &map, &mut rng, NUM_TRIALS);
         }
-        pool.sort_by(|a,b| a.fitness.partial_cmp(&b.fitness).unwrap());
-        let first = pool.first().unwrap();
+        state.pool.sort_by(|a,b| a.fitness.partial_cmp(&b.fitness).unwrap());
+        if state.round % 16 == 0 {
+            let filename = format!("round{}.json.gz",state.round);
+            println!("Wrote {:?}", filename);
+            let f = std::fs::File::create(&filename).unwrap();
+            let mut encoder = Encoder::new(f).unwrap();
+            serde_json::to_writer(&mut encoder, &state).unwrap();
+            encoder.finish().unwrap().0.sync_all().unwrap();
+        }
+        let first = state.pool.first().unwrap();
         for ins in &first.instructions {
-            println!("{:.5}: {}", ins.0, ins.1)
+            println!("{:.5}: {}", ins.order, ins.ins)
         }
+        println!("First mutation rate {}", first.mutation_rate);
         fitness_single(
-            first.instructions.iter().map(|a| a.1),
+            first.instructions.iter().map(|a| a.ins),
             &map, 
             [
                 Some(FChar::try_from('a').unwrap()),
@@ -226,7 +245,7 @@ fn main() {
             true,
         );
         fitness_single(
-            first.instructions.iter().map(|a| a.1),
+            first.instructions.iter().map(|a| a.ins),
             &map, 
             [
                 Some(FChar::try_from('a').unwrap()),
@@ -244,19 +263,27 @@ fn main() {
         );
         println!(
             "Round {}, best/med/worst {:.5}/{:.5}/{:.5}",
-            round,
-            pool.first().unwrap().fitness,
-            pool[pool.len()/2].fitness,
-            pool.last().unwrap().fitness,
+            state.round,
+            state.pool.first().unwrap().fitness,
+            state.pool[state.pool.len()/2].fitness,
+            state.pool.last().unwrap().fitness,
         );
-        for _ in 0..((pool.len()/4)*3) {
-            pool.pop();
-        }
-        let parents_end = pool.len();
+        // for _ in 0..((pool.len()/4)*3) {
+        //     pool.pop();
+        // }
+        let prev_len = state.pool.len() as f64;
+        let mut i = 0;
+        #[allow(clippy::eval_order_dependence)]
+        state.pool.retain(|_| (rng.gen::<f64>() > ((i as f64)/prev_len), i += 1).0);
+        let parents_end = state.pool.len();
+        dbg!(parents_end);
         for _ in parents_end..GENEPOOL_SIZE {
-            let parents = (&pool[rng.gen_range(0..parents_end)],&pool[rng.gen_range(0..parents_end)]);
+            let parents = (
+                &state.pool[rng.gen_range(0..parents_end)],
+                &state.pool[rng.gen_range(0..parents_end)],
+            );
             let mut genes = Vec::new();
-            for mut b in diff(parents.0.instructions.iter().map(|a| *a), parents.1.instructions.iter().map(|a| *a)) {
+            for mut b in diff(parents.0.instructions.iter().copied(), parents.1.instructions.iter().copied()) {
                 match b.ty {
                     DiffTy::Both => genes.append(&mut b.block),
                     _ => if rng.gen():bool { genes.append(&mut b.block) },
@@ -283,9 +310,9 @@ fn main() {
                 child.mutation_rate = 0.01;
             }
             while rng.gen::<f64>() < child.mutation_rate {
-                if rng.gen::<bool>() {
+                if rng.gen::<bool>() && child.instructions.len() < INSTRUCTION_SIZE_MAX {
                     //add a random gene
-                    child.instructions.push(Gene(rng.gen(), SvmInstruction::random(&mut rng)));
+                    child.instructions.push(Gene{order: rng.gen(), ins: SvmInstruction::random(&mut rng)});
                     child.instructions.sort();
                 } else {
                     //remove a random gene
@@ -294,15 +321,14 @@ fn main() {
                     }
                 }
             }
-            pool.push(child);
+            state.pool.push(child);
         }
 
-        round += 1;
+        state.round += 1;
     }
+}
 
-    std::process::exit(0);
-    // let pb = ProgressBar::new(words.len().try_into().unwrap():u64);
-    // pb.inc(0);
+fn find_squares(words: &[Word], map: &WMap) {
     let mut square:[[Option<FChar>; SIZE]; SIZE] = [[None; SIZE]; SIZE];
 
     let mut num_squares = 0;
@@ -312,31 +338,12 @@ fn main() {
             square[0][i] = Some(word[i]);
         }
         recurse(square,0,1,&map,&mut num_squares);
-        // pb.inc(1);
     }
     dbg!(start.elapsed());
     dbg!(&num_squares);
-
-    // let thing = [
-    //     Some(FChar::try_from('b').unwrap()),
-    //     Some(FChar::try_from('e').unwrap()),
-    //     Some(FChar::try_from('g').unwrap()),
-    //     Some(FChar::try_from('i').unwrap()),
-    //     Some(FChar::try_from('n').unwrap()),
-    //     Some(FChar::try_from('n').unwrap()),
-    //     Some(FChar::try_from('i').unwrap()),
-    //     None, //Some(FChar::try_from('n').unwrap()),
-    //     None, //Some(FChar::try_from('g').unwrap()),
-    // ];
-    //dbg!(map.get(&[None; SIZE]));
-    //dbg!(map.get(&thing).unwrap().clone().into_iter().map(|a| a.into():char).collect():Vec<_>);
-
-    //count 3 levels deep
-    //dbg!(count(SIZE-1,[None; SIZE],0,&map));
 }
 
 fn recurse(s:Square,col:usize,row:usize,map:&WMap,count:&mut u64) {
-    //dbg!(col, row, s);
     if row == SIZE {
         for i in 0..SIZE {
             for j in 0..SIZE {
@@ -350,15 +357,16 @@ fn recurse(s:Square,col:usize,row:usize,map:&WMap,count:&mut u64) {
     }
     let mut col_key:OWord = [None; SIZE];
     let mut row_key:OWord = [None; SIZE];
-    for i in 0..col {
-        row_key[i] = s[row][i];
-    }
+    row_key.copy_from_slice(&s[row]);
+    // for i in 0..col {
+    //     row_key[i] = s[row][i];
+    // }
     for i in 0..row {
         col_key[i] = s[i][col];
     }
     //dbg!(col_key, row_key);
-    let col_set = map.get(&col_key).map(|a| *a).unwrap_or_default();
-    let row_set = map.get(&row_key).map(|a| *a).unwrap_or_default();
+    let col_set = map.get(&col_key).copied().unwrap_or_default();
+    let row_set = map.get(&row_key).copied().unwrap_or_default();
     let and_set = col_set & row_set;
     let new_col = (col+1) % SIZE;
     let new_row = if col == SIZE-1 {
@@ -374,30 +382,22 @@ fn recurse(s:Square,col:usize,row:usize,map:&WMap,count:&mut u64) {
     }
 }
 
-fn count(levels:usize,thing:OWord,index:usize,map:&WMap) -> usize {
-    let set = map.get(&thing).map(|a| *a).unwrap_or_default();
+#[allow(dead_code)]
+fn count(
+    levels:usize,
+    thing:OWord,
+    index:usize,
+    map:&WMap
+) -> usize {
+    let set = map.get(&thing).copied().unwrap_or_default();
     assert!(thing[index].is_none());
     set.into_iter().map(|f| {
         if index < levels {
             let mut new_thing = thing;
             new_thing[index] = Some(f);
-            return count(levels, new_thing, index + 1,map);
+            count(levels, new_thing, index + 1,map)
         } else {
-            return 1;
+            1
         }
     }).sum()
-}
-
-fn confirm() -> String {
-    loop {
-        let mut answer = String::new();
-
-        io::stdin().read_line(&mut answer)
-                   .ok()
-                   .expect("Failed to read line");
-
-        if !answer.is_empty() && answer != "\n" && answer != "\r\n" {
-            return answer
-        }
-    }
 }

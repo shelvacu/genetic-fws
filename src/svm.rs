@@ -1,5 +1,6 @@
 use std::fmt;
 use rand::Rng;
+use serde_derive::{Deserialize,Serialize};
 // The Shelvacu Fast Word Square VM: SFWSVM -> SVM
 // registers (32-bit each)
 // 00 output
@@ -10,7 +11,7 @@ const SVM_NUM_REGISTERS:usize = 32;
 type SvmRegister = u32;
 type SvmMemory = Box<[SvmRegister; SVM_NUM_REGISTERS]>;
 
-#[derive(Debug,PartialEq,Eq,Clone,Copy,PartialOrd,Ord)]
+#[derive(Debug,PartialEq,Eq,Clone,Copy,PartialOrd,Ord,Serialize,Deserialize)]
 pub enum SvmInstructionTy {
     Xor,
     Add,
@@ -47,7 +48,7 @@ impl SvmInstructionTy {
     }
 }
 
-#[derive(Debug,PartialEq,Eq,Clone,Copy,PartialOrd,Ord)]
+#[derive(Debug,PartialEq,Eq,Clone,Copy,PartialOrd,Ord,Serialize,Deserialize)]
 pub struct SvmInstruction {
     pub ty: SvmInstructionTy,
     pub dest: u8,
@@ -92,6 +93,7 @@ impl<I: Iterator<Item=SvmInstruction> + fmt::Debug> SvmState<I> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn memory(&self) -> &[SvmRegister] {
         self.memory.as_slice()
     }
@@ -117,9 +119,9 @@ impl<I: Iterator<Item=SvmInstruction> + fmt::Debug> SvmState<I> {
                 Jis => if self.get(ins.dest) & (1 << ins.src) != 0 {let _ = self.instructions.next();}, //jump forward one instruction if bit is set
                 Jns => if self.get(ins.dest) & (1 << ins.src) == 0 {let _ = self.instructions.next();}, //jump if not set
             }
-            return StepResult::Continue;
+            StepResult::Continue
         } else {
-            return StepResult::Finish;
+            StepResult::Finish
         }
     }
 
